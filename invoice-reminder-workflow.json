@@ -1,0 +1,279 @@
+{
+  "name": "Invoice / Payment Reminder Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "d41d050b-5a36-42a3-9cb4-37bd81f351e9",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 32]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Unpaid"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2eda084b-de75-4504-b06c-1f876450ada5",
+      "name": "Get Unpaid Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [224, 32]
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst msDay = 86400000;\n\nreturn $input.all().map(item => {\n  const d = item.json;\n  const due = new Date(d.DueDate);\n  const last = d.LastReminded ? new Date(d.LastReminded) : null;\n  item.json.daysOverdue = Math.floor((today - due) / msDay);\n  item.json.daysSinceReminder = last ? Math.floor((today - last) / msDay) : 999;\n  return item;\n});"
+      },
+      "id": "5f31e0b9-3aeb-459f-abb2-0e129c066c76",
+      "name": "Calculate Days Overdue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [448, 32]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.daysOverdue }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.daysSinceReminder }}",
+              "rightValue": 5,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5f2c218b-7edb-44db-8254-ffef7669c305",
+      "name": "IF Overdue & Not Recently Reminded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [672, 32]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "models/gemini-3-flash-preview"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are writing a payment reminder email on behalf of the Accounts Team.\n\nClient: {{ $json.Client }}\nAmount due: {{ $json.Amount }}\nOriginal due date: {{ $json.DueDate }}\nDays overdue: {{ $json.daysOverdue }}\nReminders already sent: {{ $json.ReminderCount || 0 }}\n\nTone rules:\n- Under 7 days overdue: gentle and friendly, assume it was an oversight.\n- 7 to 14 days overdue: polite but clear that payment is needed soon.\n- Over 14 days overdue: firm but professional, ask for payment or a response within 3 business days.\n\nOutput rules:\n- Return only the email body in plain text. No subject line, no placeholders, no markdown.\n- Start with \"Dear {{ $json.Client }},\"\n- Mention the amount and how many days overdue it is.\n- Under 120 words.\n- End with \"Kind regards,\" followed by \"Accounts Team\"."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [912, -96],
+      "id": "08a53bf8-e3d9-4b71-9cf6-9ae3f491afbc",
+      "name": "Message a model"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('IF Overdue & Not Recently Reminded').item.json.Email }}",
+        "subject": "=Payment reminder: invoice due {{ $('IF Overdue & Not Recently Reminded').item.json.DueDate }}",
+        "emailType": "text",
+        "message": "={{ $json.content.parts.map(p => p.text).filter(Boolean).join('') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f914be02-f71c-432d-bddc-001f011f3248",
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1248, 16]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $('IF Overdue & Not Recently Reminded').item.json.row_number }}",
+            "LastReminded": "={{ $now.toFormat('yyyy-MM-dd') }}",
+            "ReminderCount": "={{ Number($('IF Overdue & Not Recently Reminded').item.json.ReminderCount || 0) + 1 }}"
+          },
+          "matchingColumns": ["row_number"],
+          "schema": [
+            {
+              "id": "Client",
+              "displayName": "Client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Amount",
+              "displayName": "Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "DueDate",
+              "displayName": "DueDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "LastReminded",
+              "displayName": "LastReminded",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ReminderCount",
+              "displayName": "ReminderCount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "5a024404-5c62-4153-8456-84c9ef4b1f86",
+      "name": "Update Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1472, 16]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Get Unpaid Rows", "type": "main", "index": 0 }]]
+    },
+    "Get Unpaid Rows": {
+      "main": [[{ "node": "Calculate Days Overdue", "type": "main", "index": 0 }]]
+    },
+    "Calculate Days Overdue": {
+      "main": [[{ "node": "IF Overdue & Not Recently Reminded", "type": "main", "index": 0 }]]
+    },
+    "IF Overdue & Not Recently Reminded": {
+      "main": [
+        [{ "node": "Message a model", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Message a model": {
+      "main": [[{ "node": "Send Gmail", "type": "main", "index": 0 }]]
+    },
+    "Send Gmail": {
+      "main": [[{ "node": "Update Row", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
